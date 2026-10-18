@@ -149,7 +149,7 @@ def display_markets(markets: list):
         print(f"    [{m['sub_type_id']:>3}] {m['market_name']:<35} {sels_str}")
 
 def run():
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    tomorrow_str = datetime.now().strftime("%Y-%m-%d")
     tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
     matches = fetch_matches()
@@ -239,7 +239,7 @@ def run():
     # Close DB connection
     conn.close()
 
-    out_path = OUT_DIR / f"{today_str}_matches.json"
+    out_path = OUT_DIR / f"{tomorrow_str}_matches.json"
     out_path.write_text(json.dumps(
         {
             "scraped_at":    datetime.now().isoformat(),

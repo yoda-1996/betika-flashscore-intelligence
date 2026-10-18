@@ -1,7 +1,6 @@
 """
-sync_betika_flashscore.py - WORKING VERSION
-Links Betika fixtures with Flashscore deep stats.
-Uses Betika ID (b_id) for all database inserts.
+sync_betika_flashscore.py - HIGH SPEED VERSION
+Uses Parallel Processing and Narrow Search Windows.
 """
 
 import requests
@@ -11,6 +10,7 @@ import time
 import re
 from datetime import datetime, timedelta
 from database import get_db_connection
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 FLASHSCORE_API = "http://localhost:8000"
 THRESHOLD = 0.60
@@ -64,16 +64,11 @@ def get_standings(pair):
         return standings_cache[pair]
     
     res = {}
-    if not pair:
-        return res
+    if not pair: return res
 
     plans = [
-        ('overall', [{'type': 'overall'}]),
-        ('home', [{'type': 'home'}]),
-        ('away', [{'type': 'away'}]),
-        ('ht-ft', [{'type': 'ht-ft'}]),
-        ('ht-ft-home', [{'type': 'ht-ft-home'}]),
-        ('ht-ft-away', [{'type': 'ht-ft-away'}]),
+        ('overall', [{'type': 'overall'}]), ('home', [{'type': 'home'}]), ('away', [{'type': 'away'}]),
+        ('ht-ft', [{'type': 'ht-ft'}]), ('ht-ft-home', [{'type': 'ht-ft-home'}]), ('ht-ft-away', [{'type': 'ht-ft-away'}]),
         ('form-overall', [{'type': 'form', 'line': '5'}, {'type': 'form'}]),
         ('form-home', [{'type': 'form-home', 'line': '5'}, {'type': 'form-home'}]),
         ('form-away', [{'type': 'form-away', 'line': '5'}, {'type': 'form-away'}]),
@@ -86,12 +81,11 @@ def get_standings(pair):
             try:
                 r = requests.get(f"{FLASHSCORE_API}/tournaments/standings", params=params, timeout=10)
                 d = r.json()
-                time.sleep(0.2)
+                time.sleep(0.1) # Faster sleep
                 if 'error' not in d and d.get('standings'):
                     res[key] = json.dumps(d)
                     break
-            except Exception:
-                pass
+            except Exception: pass
 
     ou_all = {}
     for line in OU_LINES:
@@ -99,51 +93,56 @@ def get_standings(pair):
             params = {'tournament': pair, 'type': 'over-under', 'line': line}
             r = requests.get(f"{FLASHSCORE_API}/tournaments/standings", params=params, timeout=10)
             d = r.json()
-            time.sleep(0.2)
-            if 'error' not in d and d.get('standings'):
-                ou_all[line] = d
-        except Exception:
-            pass
+            time.sleep(0.1)
+            if 'error' not in d and d.get('standings'): ou_all[line] = d
+        except Exception: pass
             
     if ou_all:
         res['ou_all'] = json.dumps(ou_all)
-        if '2.5' in ou_all:
-            res['over-under'] = json.dumps(ou_all['2.5'])
+        if '2.5' in ou_all: res['over-under'] = json.dumps(ou_all['2.5'])
 
     standings_cache[pair] = res
     return res
 
-def get_h2h(fs_id):
-    try:
-        r = requests.get(f"{FLASHSCORE_API}/matches/h2h", params={'match': fs_id}, timeout=10)
-        d = r.json()
-        return json.dumps(d) if 'error' not in d else ""
-    except Exception:
-        return ""
-
-def get_extras(fs_id):
-    extras = {'injuries': '', 'news': '', 'report': '', 'lineups': ''}
+def get_match_extras(fs_id):
+    """Fetches H2H, News, Injuries, Lineups in one go."""
+    extras = {'h2h': '', 'injuries': '', 'news': '', 'report': '', 'lineups': ''}
     endpoints = [
-        ('/matches/missing-players', 'injuries'),
-        ('/matches/news', 'news'),
-        ('/matches/summary', 'report'),
-        ('/matches/lineups', 'lineups')
+        ('/matches/h2h', 'h2h'), ('/matches/missing-players', 'injuries'),
+        ('/matches/news', 'news'), ('/matches/summary', 'report'), ('/matches/lineups', 'lineups')
     ]
     
     for path, key in endpoints:
         try:
             r = requests.get(f"{FLASHSCORE_API}{path}", params={'match': fs_id}, timeout=10)
             d = r.json()
-            time.sleep(0.2)
+            time.sleep(0.1)
             if isinstance(d, (dict, list)) and d and not (isinstance(d, dict) and 'error' in d):
                 extras[key] = json.dumps(d)
-        except Exception:
-            pass
+        except Exception: pass
     return extras
 
-# ─── 3. Main Sync Logic ─────────────────────────────────────────────────────
+# ── 3. Worker Function for Parallel Processing ──────────────────────────────
+def process_single_match(link_data):
+    """Fetches deep stats for one match. Runs in parallel."""
+    b_id, fs_id, fs_home, fs_away, t_pair = link_data
+    if not t_pair: return None
+    
+    try:
+        tables = get_standings(t_pair)
+        extras = get_match_extras(fs_id)
+        
+        return {
+            'b_id': b_id, 'fs_home': fs_home, 'fs_away': fs_away, 't_pair': t_pair,
+            'tables': tables, 'extras': extras
+        }
+    except Exception as e:
+        print(f"  Error processing {fs_home} vs {fs_away}: {e}")
+        return None
+
+# ── 4. Main Sync Logic ────────────────────────────────────────────────────
 def main():
-    print("Starting Flashscore Sync Engine (Tomorrow Only)...")
+    print("🚀 Starting HIGH-SPEED Flashscore Sync Engine...")
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -151,17 +150,16 @@ def main():
     cur.execute("SELECT match_id, home, away, league FROM fixtures WHERE date(kickoff) = date('now', '+1 day')")
     betika_fixtures = cur.fetchall()
     print(f"Loaded {len(betika_fixtures)} Betika fixtures for tomorrow.")
-
     if not betika_fixtures:
-        print("No fixtures found for tomorrow. Exiting.")
-        conn.close()
-        return
+        print("No fixtures found. Exiting.")
+        conn.close(); return
 
-    # 2. Fetch Flashscore matches for a WIDER date range
-    print("Fetching Flashscore matches...")
+    # 2. Fetch Flashscore matches (NARROW WINDOW: Yesterday to Day after tomorrow)
+    print("Fetching Flashscore pool (Narrow Window)...")
     fs_pool = []
     today = datetime.now()
-    for i in range(-5, 6):
+    # SPEEDUP 1: Only look at -1 to +3 days instead of -5 to +6
+    for i in range(-1, 4): 
         date_str = (today + timedelta(days=i)).strftime('%Y-%m-%d')
         try:
             r = requests.get(f"{FLASHSCORE_API}/matches", params={'sport': 'football', 'date': date_str}, timeout=15)
@@ -174,106 +172,68 @@ def main():
                 
                 for m in comp.get('matches', []):
                     fs_pool.append({
-                        'id': m.get('id'),
-                        'home': (m.get('home') or {}).get('name', ''),
-                        'away': (m.get('away') or {}).get('name', ''),
-                        'comp': c.get('name', ''),
-                        'tournament_pair': pair
+                        'id': m.get('id'), 'home': (m.get('home') or {}).get('name', ''),
+                        'away': (m.get('away') or {}).get('name', ''), 'tournament_pair': pair
                     })
-        except Exception as e:
-            print(f"Error fetching FS for {date_str}: {e}")
+        except Exception as e: print(f"Error fetching FS for {date_str}: {e}")
     print(f"Flashscore pool: {len(fs_pool)} candidates.")
 
     # 3. Link Matches
     print("Linking matches...")
-    linked_count = 0
+    linked_data = []
     for b_id, b_home, b_away, b_league in betika_fixtures:
         match, score, is_swapped = find_best_match(b_home, b_away, fs_pool)
-        
         if match:
             fs_home = match['away'] if is_swapped else match['home']
             fs_away = match['home'] if is_swapped else match['away']
-            
-            cur.execute("""
-                INSERT OR REPLACE INTO match_links 
-                (betika_match_id, flashscore_match_id, fs_home, fs_away, confidence) 
-                VALUES (?, ?, ?, ?, ?)
-            """, (b_id, match['id'], fs_home, fs_away, round(score, 3)))
-            linked_count += 1
-
-    print(f"✅ Linked {linked_count} matches.")
+            cur.execute("INSERT OR REPLACE INTO match_links (betika_match_id, flashscore_match_id, fs_home, fs_away, confidence) VALUES (?, ?, ?, ?, ?)",
+                        (b_id, match['id'], fs_home, fs_away, round(score, 3)))
+            linked_data.append((b_id, match['id'], fs_home, fs_away, match.get('tournament_pair')))
     conn.commit()
+    print(f"✅ Linked {len(linked_data)} matches.")
 
-    # 4. Fetch Deep Intelligence for Linked Matches
-    print("\nFetching deep intelligence (Standings, HT/FT, H2H, Extras)...")
-    cur.execute("""
-        SELECT ml.betika_match_id, ml.flashscore_match_id, ml.fs_home, ml.fs_away
-        FROM match_links ml
-        JOIN fixtures f ON ml.betika_match_id = f.match_id
-        WHERE date(f.kickoff) = date('now', '+1 day')
-    """)
-    links = cur.fetchall()
+    # 4. Fetch Deep Intelligence IN PARALLEL
+    print(f"\nFetching deep stats for {len(linked_data)} matches (Parallel Mode)...")
+    results = []
     
-    print(f"Processing {len(links)} linked matches...")
-    
-    stats_count = 0
-    for b_id, fs_id, fs_home, fs_away in links:
-        t_pair = next((m['tournament_pair'] for m in fs_pool if m['id'] == fs_id), None)
-        
-        if not t_pair:
-            continue
-        
-        try:
-            # A. Ultimate Stats (USING b_id - Betika ID)
-            tables = get_standings(t_pair)
-            cur.execute("""
-                INSERT OR REPLACE INTO ultimate_stats 
-                (match_id, home_team, away_team, tournament_pair, overall_table, home_table, away_table, 
-                 over_under_table, ht_ft_table, ht_ft_home_table, ht_ft_away_table,
-                 form_overall_table, form_home_table, form_away_table, ou_all, collected_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                b_id, fs_home, fs_away, t_pair,
-                tables.get('overall', ''), tables.get('home', ''), tables.get('away', ''),
-                tables.get('over-under', ''), tables.get('ht-ft', ''),
-                tables.get('ht-ft-home', ''), tables.get('ht-ft-away', ''),
-                tables.get('form-overall', ''), tables.get('form-home', ''), tables.get('form-away', ''),
-                tables.get('ou_all', ''), datetime.now().isoformat()
-            ))
+    # SPEEDUP 2: Use 5 threads to fetch data simultaneously
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(process_single_match, data): data for data in linked_data}
+        for i, future in enumerate(as_completed(futures)):
+            res = future.result()
+            if res: results.append(res)
+            if (i+1) % 20 == 0: print(f"  Processed {i+1}/{len(linked_data)} matches...")
 
-            # B. H2H Data (USING b_id - Betika ID)
-            h2h_data = get_h2h(fs_id)
-            if h2h_data:
-                cur.execute("""
-                    INSERT OR REPLACE INTO flashscore_h2h 
-                    (match_id, home_team_name, away_team_name, h2h_data) 
-                    VALUES (?, ?, ?, ?)
-                """, (b_id, fs_home, fs_away, h2h_data))
+    # 5. Batch Save to Database
+    print("Saving to database...")
+    for res in results:
+        b_id, fs_home, fs_away, t_pair = res['b_id'], res['fs_home'], res['fs_away'], res['t_pair']
+        tables, extras = res['tables'], res['extras']
+        
+        cur.execute("""INSERT OR REPLACE INTO ultimate_stats 
+            (match_id, home_team, away_team, tournament_pair, overall_table, home_table, away_table, 
+             over_under_table, ht_ft_table, ht_ft_home_table, ht_ft_away_table,
+             form_overall_table, form_home_table, form_away_table, ou_all, collected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (b_id, fs_home, fs_away, t_pair, tables.get('overall',''), tables.get('home',''), tables.get('away',''),
+             tables.get('over-under',''), tables.get('ht-ft',''), tables.get('ht-ft-home',''), tables.get('ht-ft-away',''),
+             tables.get('form-overall',''), tables.get('form-home',''), tables.get('form-away',''),
+             tables.get('ou_all',''), datetime.now().isoformat()))
 
-            # C. Extras (USING b_id - Betika ID)
-            extras = get_extras(fs_id)
-            cur.execute("""
-                INSERT OR REPLACE INTO match_extras 
-                (betika_match_id, available_tabs, injuries, news, report, lineups, collected_at) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                b_id, json.dumps(list(extras.keys())), 
-                extras.get('injuries', ''), extras.get('news', ''), 
-                extras.get('report', ''), extras.get('lineups', ''), 
-                datetime.now().isoformat()
-            ))
-            
-            stats_count += 1
-            
-            if stats_count % 10 == 0:
-                print(f"  Processed {stats_count}/{len(links)} matches...")
-                
-        except Exception as e:
-            print(f"  Error processing {fs_home} vs {fs_away}: {e}")
+        if extras.get('h2h'):
+            cur.execute("INSERT OR REPLACE INTO flashscore_h2h (match_id, home_team_name, away_team_name, h2h_data) VALUES (?, ?, ?, ?)",
+                        (b_id, fs_home, fs_away, extras['h2h']))
+
+        cur.execute("""INSERT OR REPLACE INTO match_extras 
+            (betika_match_id, available_tabs, injuries, news, report, lineups, collected_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (b_id, json.dumps([k for k,v in extras.items() if v]), extras.get('injuries',''), 
+             extras.get('news',''), extras.get('report',''), extras.get('lineups',''), datetime.now().isoformat()))
 
     conn.commit()
     conn.close()
-    print(f"\n🎉 Sync Complete! Processed deep stats for {stats_count} matches.")
+    print(f"\n🎉 HIGH-SPEED Sync Complete! Processed {len(results)} matches.")
 
 if __name__ == "__main__":
     main()
+
