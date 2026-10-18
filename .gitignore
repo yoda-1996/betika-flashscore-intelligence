@@ -1,0 +1,22 @@
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database (Optional: Uncomment the next line if you don't want to upload the DB)
+# *.db
+
+# Temporary data and backups
+betika_data/
+backups/
+*.log
+
+# Environment variables (if you ever add API keys)
+.env
+data/*.db
+*.db
