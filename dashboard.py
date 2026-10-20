@@ -185,7 +185,7 @@ if tab == "Fixtures Overview":
 
 elif tab == "Market Explorer":
     st.header("Betika Odds Market Explorer")
-    df_matches = load_data("SELECT match_id, home, away, league FROM fixtures ORDER BY kickoff ASC")
+    df_matches = load_data("SELECT match_id, home, away, league FROM fixtures WHERE date(kickoff) = date('now', '+1 day') ORDER BY kickoff ASC")
     if df_matches.empty:
         st.warning("No data.")
     else:
@@ -260,7 +260,7 @@ elif tab == "Safe Bets (Bankers)":
                vb.model_probability, vb.confidence_score
         FROM value_bets vb
         JOIN fixtures f ON vb.match_id = f.match_id
-        WHERE vb.betika_odd BETWEEN 1.01 AND 1.30
+        WHERE vb.betika_odd BETWEEN 1.01 AND 1.50
         AND vb.ev_percent > 0 AND date(f.kickoff) = date('now', '+1 day')
         ORDER BY f.kickoff ASC
     """)
