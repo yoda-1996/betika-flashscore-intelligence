@@ -254,14 +254,23 @@ def get_team_form_goals_weighted(h2h_json, team_name):
     }
 
 def run_model():
-    print("🚀 Starting Probability Model v3 (Refined)...")
+    print("🚀 Starting Probability Model v3 (Refined) ...")
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Clear old value bets to prevent duplicates
+    cursor.execute('DELETE FROM value_bets')
+    conn.commit()
+    print('🗑️ Cleared old value bets')
+    # Clear old value bets to prevent duplicates
+    conn.commit()
+    print('🗑️ Cleared old value bets')
+    # Clear old value bets to prevent duplicates
+    conn.commit()
+    print("🗑️ Cleared old value bets")
     
     # 1. Calculate Dynamic Averages first
     league_avg_home, league_avg_away = calculate_dynamic_league_averages(cursor)
     
-    cursor.execute("DELETE FROM value_bets")
     
         # Only process tomorrow's fixtures
     cursor.execute("""
