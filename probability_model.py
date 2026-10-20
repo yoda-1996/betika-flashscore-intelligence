@@ -318,13 +318,14 @@ def run_model():
         
         probs = calculate_verbose_probs(lambda_home, lambda_away)
         
-        cursor.execute("SELECT market_name, selection, odd FROM odds WHERE match_id = ?", (match_id,))
+        cursor.execute("SELECT market_name, selection, odd, line FROM odds WHERE match_id = ?", (match_id,))
         odds = cursor.fetchall()
         
         for odd_row in odds:
             market = odd_row['market_name']
             selection = odd_row['selection']
             betika_odd = odd_row['odd']
+            line = odd_row['line'] if 'line' in odd_row.keys() else ''
             
             model_prob = 0.0
             
@@ -332,6 +333,19 @@ def run_model():
                 if selection == home_team: model_prob = probs['Home Win']
                 elif selection.lower() == "draw": model_prob = probs['Draw']
                 elif selection == away_team: model_prob = probs['Away Win']
+            elif "HANDICAP" in market.upper():
+                try:
+                    if line and 'hcp=' in str(line):
+                        h_val, a_val = map(int, str(line).split('=')[1].split(':'))
+                        target_diff = a_val - h_val
+                        if home_team.split()[0] in selection:
+                            model_prob = skellam.sf(target_diff, lambda_home, lambda_away)
+                        elif 'draw' in selection.lower():
+                            model_prob = skellam.pmf(target_diff, lambda_home, lambda_away)
+                        elif away_team.split()[0] in selection:
+                            model_prob = skellam.cdf(target_diff - 1, lambda_home, lambda_away)
+                except Exception:
+                    pass
             elif market in ["TOTAL", "Over/Under"]:
                 if "over 2.5" in selection.lower(): model_prob = probs['Over 2.5']
                 elif "under 2.5" in selection.lower(): model_prob = probs['Under 2.5']
