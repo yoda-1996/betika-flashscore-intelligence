@@ -4,6 +4,56 @@ Features: Dynamic League Averages & Time-Decay Weighting.
 """
 
 import sqlite3
+
+def calculate_skellam_hybrid_probs(lambda_home, lambda_away):
+    """
+    Hybrid Model:
+    - Uses Skellam Distribution for 1X2 (More accurate)
+    - Uses Poisson Sum for Over/Under
+    - Uses Independent Poisson for BTTS
+    """
+    probs = {}
+
+    # --- 1X2 (Skellam Distribution) ---
+    # P(Home Win) = P(Home Goals - Away Goals > 0)
+    p_home = skellam.sf(0, lambda_home, lambda_away)
+    # P(Draw) = P(Home Goals - Away Goals == 0)
+    p_draw = skellam.pmf(0, lambda_home, lambda_away)
+    # P(Away Win) = P(Home Goals - Away Goals < 0)
+    p_away = skellam.cdf(-1, lambda_home, lambda_away)
+
+    # Normalize to ensure they sum to 1 (handling float precision)
+    total_1x2 = p_home + p_draw + p_away
+    probs['Home Win'] = p_home / total_1x2
+    probs['Draw'] = p_draw / total_1x2
+    probs['Away Win'] = p_away / total_1x2
+
+    # --- Over/Under 2.5 (Poisson Sum) ---
+    # The sum of two independent Poisson variables is also Poisson
+    lambda_total = lambda_home + lambda_away
+    probs['Over 2.5'] = 1 - poisson.cdf(2, lambda_total)
+    probs['Under 2.5'] = poisson.cdf(2, lambda_total)
+
+    # --- BTTS (Independent Poissons) ---
+    p_home_scores = 1 - poisson.pmf(0, lambda_home)
+    p_away_scores = 1 - poisson.pmf(0, lambda_away)
+    
+    probs['BTTS Yes'] = p_home_scores * p_away_scores
+    probs['BTTS No'] = 1 - probs['BTTS Yes']
+
+    # --- 1st Half Approximation ---
+    lambda_home_1h = lambda_home * 0.42
+    lambda_away_1h = lambda_away * 0.42
+
+    p_home_1h_scores = 1 - poisson.pmf(0, lambda_home_1h)
+    p_away_1h_scores = 1 - poisson.pmf(0, lambda_away_1h)
+    
+    probs['1H BTTS Yes'] = p_home_1h_scores * p_away_1h_scores
+    probs['1H BTTS No'] = 1 - probs['1H BTTS Yes']
+
+    return probs
+
+from scipy.stats import skellam, poisson
 import json
 import math
 from scipy.stats import poisson
@@ -116,7 +166,7 @@ def get_team_form_goals_weighted(h2h_json, team_name):
         print(f"Error parsing form: {e}")
         return None, None, 0
 
-def calculate_poisson_probs(lambda_home, lambda_away):
+# DEPRECATED: def calculate_poisson_probs(lambda_home, lambda_away):
     max_goals = 10
     probs = {}
     
@@ -211,7 +261,7 @@ def run_model():
         # Home Advantage Boost
         lambda_home *= 1.10
         
-        probs = calculate_poisson_probs(lambda_home, lambda_away)
+        probs = calculate_skellam_hybrid_probs(lambda_home, lambda_away)
         
         cursor.execute("SELECT market_name, selection, odd FROM odds WHERE match_id = ?", (match_id,))
         odds = cursor.fetchall()
@@ -260,3 +310,55 @@ def run_model():
 
 if __name__ == "__main__":
     run_model()
+
+
+def calculate_skellam_hybrid_probs(lambda_home, lambda_away):
+    """
+    Hybrid Model:
+    - Uses Skellam Distribution for 1X2 (More accurate, infinite goal range)
+    - Uses Poisson Sum for Over/Under (Faster than looping)
+    - Uses Independent Poisson for BTTS
+    """
+    probs = {}
+
+    # --- 1X2 (Skellam Distribution) ---
+    # P(Home Win) = P(Home Goals - Away Goals > 0)
+    p_home = skellam.sf(0, lambda_home, lambda_away)
+    # P(Draw) = P(Home Goals - Away Goals == 0)
+    p_draw = skellam.pmf(0, lambda_home, lambda_away)
+    # P(Away Win) = P(Home Goals - Away Goals < 0)
+    p_away = skellam.cdf(-1, lambda_home, lambda_away)
+
+    # Normalize to ensure they sum to 1 (handling float precision)
+    total_1x2 = p_home + p_draw + p_away
+    probs['Home Win'] = p_home / total_1x2
+    probs['Draw'] = p_draw / total_1x2
+    probs['Away Win'] = p_away / total_1x2
+
+    # --- Over/Under 2.5 (Poisson Sum) ---
+    # The sum of two independent Poisson variables is also Poisson
+    lambda_total = lambda_home + lambda_away
+    probs['Over 2.5'] = 1 - poisson.cdf(2, lambda_total)
+    probs['Under 2.5'] = poisson.cdf(2, lambda_total)
+
+    # --- BTTS (Independent Poissons) ---
+    # Probability Home scores at least 1
+    p_home_scores = 1 - poisson.pmf(0, lambda_home)
+    # Probability Away scores at least 1
+    p_away_scores = 1 - poisson.pmf(0, lambda_away)
+    
+    probs['BTTS Yes'] = p_home_scores * p_away_scores
+    probs['BTTS No'] = 1 - probs['BTTS Yes']
+
+    # --- 1st Half Approximation ---
+    # Using the 42% rule mentioned in your original code comments
+    lambda_home_1h = lambda_home * 0.42
+    lambda_away_1h = lambda_away * 0.42
+
+    p_home_1h_scores = 1 - poisson.pmf(0, lambda_home_1h)
+    p_away_1h_scores = 1 - poisson.pmf(0, lambda_away_1h)
+    
+    probs['1H BTTS Yes'] = p_home_1h_scores * p_away_1h_scores
+    probs['1H BTTS No'] = 1 - probs['1H BTTS Yes']
+
+    return probs
